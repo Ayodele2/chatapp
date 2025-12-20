@@ -1,11 +1,15 @@
 import User from "../models/User.js"
 import bcrypt from "bcryptjs"
-import { generateToken } from "../lib/utils.js";
+import { generateToken } from "../lib/utils.js"
+import { sendWelcomeEmail } from "../emails/emailHandlers.js"
+import { ENV } from "../lib/env.js";
+
 
 export const signup = async (req, res) => {
   const { fullName, email, password } = req.body
 
   try {
+    // Validation
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: "All fields required" })
     }
@@ -20,13 +24,10 @@ export const signup = async (req, res) => {
       return res.status(400).json({ message: "Invalid email format" })
     }
 
-    const user = await User.findOne({ email })
-    if (user) {
+    // Check if user already exists
+    const existingUser = await User.findOne({ email })
+    if (existingUser) {
       return res.status(400).json({ message: "Email already exists" })
-
-      // Persist user first, then issue auth cookie
-      const savedUser = await newUser.save();
-      generateToken(savedUser._id, res);
     }
 
     // Hash password
@@ -40,16 +41,26 @@ export const signup = async (req, res) => {
       password: hashedPassword
     })
 
-    await newUser.save()
+    // Save user to database first
+    const savedUser = await newUser.save()
+    
+    // Generate JWT token and set cookie
+    generateToken(savedUser._id, res)
 
     // Return success response (without password)
     res.status(201).json({
-      _id: newUser._id,
-      fullName: newUser.fullName,
-      email: newUser.email,
-      profilePic: newUser.profilePic,
-      message: "User created successfully"
+      _id: savedUser._id,
+      fullName: savedUser.fullName,
+      email: savedUser.email,
+      profilePic: savedUser.profilePic
     })
+
+    // Send welcome email in background (don't block response)
+    try {
+      await sendWelcomeEmail(savedUser.email, savedUser.fullName, ENV.CLIENT_URL)
+    } catch (error) {
+      console.error("Failed to send welcome email:", error)
+    }
 
   } catch (error) {
     console.error("Error in signup controller:", error.message)
@@ -58,11 +69,49 @@ export const signup = async (req, res) => {
 }
 
 export const login = async (req, res) => {
-  // TODO: Implement login
-  res.json({ message: "Login route" })
+  const { email, password } = req.body
+
+  try {
+    // Validation
+    if (!email || !password) {
+      return res.status(400).json({ message: "All fields required" })
+    }
+
+    // Find user
+    const user = await User.findOne({ email })
+    if (!user) {
+      return res.status(400).json({ message: "Invalid credentials" })
+    }
+
+    // Check password
+    const isPasswordCorrect = await bcrypt.compare(password, user.password)
+    if (!isPasswordCorrect) {
+      return res.status(400).json({ message: "Invalid credentials" })
+    }
+
+    // Generate token
+    generateToken(user._id, res)
+
+    // Return user data
+    res.status(200).json({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      profilePic: user.profilePic
+    })
+
+  } catch (error) {
+    console.error("Error in login controller:", error.message)
+    res.status(500).json({ message: "Internal server error" })
+  }
 }
 
 export const logout = async (req, res) => {
-  // TODO: Implement logout
-  res.json({ message: "Logout route" })
+  try {
+    res.cookie("jwt", "", { maxAge: 0 })
+    res.status(200).json({ message: "Logged out successfully" })
+  } catch (error) {
+    console.error("Error in logout controller:", error.message)
+    res.status(500).json({ message: "Internal server error" })
+  }
 }
